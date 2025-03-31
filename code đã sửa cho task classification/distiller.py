@@ -146,7 +146,7 @@ class Distiller(nn.Module):
 
         if self.args.peft is not None: #for LLM2Vec
             if self.args.peft == "lora":
-                base_model = AutoModel.from_pretrained(
+                model = AutoModel.from_pretrained(
                     self.args.model_path,
                     config=config,
                     device_map=None,
@@ -156,14 +156,15 @@ class Distiller(nn.Module):
 
 
                 # Apply a new LoRA adapter for fine-tuning
-                peft_config = LoraConfig(
-                    task_type=TaskType.FEATURE_EXTRACTION,
-                    inference_mode=(not self.args.do_train),
-                    r=self.args.peft_lora_r,
-                    lora_alpha=self.args.peft_lora_alpha,
-                    lora_dropout=self.args.peft_lora_dropout,
-                )
-                model = get_peft_model(base_model, peft_config)
+                if args.do_train:
+                    peft_config = LoraConfig(
+                        task_type=TaskType.FEATURE_EXTRACTION,
+                        inference_mode=(not self.args.do_train),
+                        r=self.args.peft_lora_r,
+                        lora_alpha=self.args.peft_lora_alpha,
+                        lora_dropout=self.args.peft_lora_dropout,
+                    )
+                    model = get_peft_model(model, peft_config)
 
                 # Initialize LLM2Vec
                 l2v = LLM2Vec(model, tokenizer, pooling_mode="mean", max_length=512)
