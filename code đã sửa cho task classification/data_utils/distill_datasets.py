@@ -9,7 +9,7 @@ from utils import log_rank
 from typing import Dict, Optional
 from transformers import AutoTokenizer
 
-class ClassificationDataset(Dataset):
+class DistillDataset(Dataset):
     def __init__(
         self,
         args,
