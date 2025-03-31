@@ -5,14 +5,14 @@ import torch.nn as nn
 from transformers import (
     AutoConfig,
     AutoTokenizer,
-    AutoModel,
-    llm2vec,   
+    AutoModel,  
     AutoModelForSequenceClassification,
 )
 from peft import (
     PeftModel,
     LoraConfig,
     TaskType,
+    get_peft_model
 )
 from llm2vec import LLM2Vec
 from utils import log_rank
@@ -23,7 +23,6 @@ class Distiller(nn.Module):
         super(Distiller, self).__init__()
         self.args = args
         self.device = device
-        self.num_labels = args.num_labels
         self.student_model, self.student_tokenizer = self.load_student_model()
         
         if self.args.teacher_model_path is not None:
@@ -72,9 +71,9 @@ class Distiller(nn.Module):
         tokenizer = self.load_tokenizer(self.args.model_path)
         
         if hasattr(config, "n_embed"):
-            self.student_hidden_size = config.n_embed
+            self.hidden_size = config.n_embed
         else:
-            self.student_hidden_size = config.hidden_size
+            self.hidden_size = config.hidden_size
         
         if self.args.model_dtype == "fp32":
             self.dtype = torch.float32
@@ -85,13 +84,64 @@ class Distiller(nn.Module):
         else:
             raise NotImplementedError("Invalid model_dtype for f`{self.args.model_dtype}`")
 
-        # Cấu hình model BERT: Do BERT fully finetune nên xoá hết phần Peft, LORA
-        model = AutoModel.from_pretrained(
-            self.args.model_path, 
-            config=config, 
-            device_map=None, 
-            torch_dtype=self.dtype,
-            trust_remote_code=True,)
+        if self.args.peft is not None: #for LLM2Vec
+            if self.args.peft == "lora":
+                base_model = AutoModel.from_pretrained(
+                    self.args.model_path,
+                    config=config,
+                    device_map=None,
+                    torch_dtype=self.dtype,
+                    trust_remote_code=True,
+                )
+
+
+                # Apply a new LoRA adapter for fine-tuning
+                peft_config = LoraConfig(
+                    task_type=TaskType.FEATURE_EXTRACTION,
+                    inference_mode=(not self.args.do_train),
+                    r=self.args.peft_lora_r,
+                    lora_alpha=self.args.peft_lora_alpha,
+                    lora_dropout=self.args.peft_lora_dropout,
+                )
+                model = get_peft_model(base_model, peft_config)
+
+                # Initialize LLM2Vec
+                l2v = LLM2Vec(model, tokenizer, pooling_mode="mean", max_length=512)
+
+                # Classification Head (can be LoRA-enhanced)
+                classification_head = nn.Linear(self.hidden_size, self.args.num_labels)
+
+                # Create a wrapper for the classification model
+                class TeacherModelForClassification(nn.Module):
+                    def __init__(self, l2v, classification_head):
+                        super().__init__()
+                        self.l2v = l2v
+                        self.classification_head = classification_head
+
+                    def forward(self, input_ids, attention_mask=None, **kwargs):
+                        # Encode text into vector representation using LLM2Vec
+                        encoded = self.l2v.encode(input_ids=input_ids, attention_mask=attention_mask)
+                        # Apply classification head
+                        logits = self.classification_head(encoded)
+                        return logits
+
+                # Initialize the teacher model
+                model = TeacherModelForClassification(l2v, classification_head)
+
+                model.print_trainable_parameters()
+            else:
+                raise NotImplementedError
+        else: #for BERT
+            config.num_labels = self.args.num_labels
+            model = AutoModelForSequenceClassification.from_pretrained(
+                self.args.model_path, 
+                config=config, 
+                device_map=None, 
+                torch_dtype=self.dtype,
+                trust_remote_code=True,)
+            log_rank(' > number of parameters: {:,}'.format(
+                sum([p.nelement() for p in model.parameters()])
+            ))
 
 
         if self.args.gradient_checkpointing:
@@ -99,9 +149,8 @@ class Distiller(nn.Module):
 
         return model, tokenizer
     
-    def load_teacher_model(self, num_labels):
+    def load_teacher_model(self):
         log_rank("Loading teacher model...")
-        simcse_path = "McGill-NLP/LLM2Vec-Mistral-7B-Instruct-v2-mntp-unsup-simcse"
         config = AutoConfig.from_pretrained(
             self.args.teacher_model_path,
             num_labels=self.num_labels,
@@ -117,25 +166,17 @@ class Distiller(nn.Module):
             self.teacher_hidden_size = config.hidden_size
 
         # Load the base model
-        base_model = AutoModel.from_pretrained(
+        model = AutoModel.from_pretrained(
             self.args.teacher_model_path,
             config=config,
             device_map=None,
             torch_dtype=self.dtype,
             trust_remote_code=True,
-            device_map="cuda" if torch.cuda.is_available() else "cpu",
         )
-        # Load and apply PEFT adapters (assuming a separate adapter path)
-        model = PeftModel.from_pretrained(
-            base_model,
-            self.args.teacher_peft_path,  # Replace with actual adapter path
-        )
-        model = model.merge_and_unload()  # Merge adapters into the base model
-
-        model = PeftModel.from_pretrained(model, simcse_path)
+        
         l2v = LLM2Vec(model, tokenizer, pooling_mode="mean", max_length=512)
         # Thêm lớp phân loại
-        classification_head = torch.nn.Linear(self.teacher_hidden_size, num_labels)
+        classification_head = torch.nn.Linear(self.teacher_hidden_size, self.args.num_labels)
         
         # Tạo lớp wrapper cho mô hình phân loại
         class TeacherModelForClassification(torch.nn.Module):
@@ -159,7 +200,7 @@ class Distiller(nn.Module):
             param.requires_grad = False
         
         # Trả về mô hình và tokenizer
-        return teacher_model, {self.args.teacher_model_type: tokenizer}
+        return teacher_model, tokenizer
     
     def add_optimizer_param_group(self, optimizer):
         if hasattr(self, "projectors"):
