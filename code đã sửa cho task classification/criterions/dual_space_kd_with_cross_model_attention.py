@@ -69,12 +69,9 @@ class DualSpaceKDWithCMA(VariousDivergence):
         hiddens = outputs.hidden_states[-1]  # (batch_size, sequence_length, hidden_size)
         teacher_hiddens = teacher_outputs.hidden_states[-1]  # (batch_size, teacher_sequence_length, hidden_size)
 
-        # Trích xuất hidden state của token [CLS]
-        stu_cls_hidden = hiddens[:, 0, :]  # (batch_size, hidden_size)
-        tea_cls_hidden = teacher_hiddens[:, 0, :]  # (batch_size, hidden_size)
-
+ 
         # Tính alignment từ teacher sang student (t2s)
-        stu_q_hiddens = distiller.projectors["query"](stu_cls_hidden).float()  # (batch_size, proj_dim)
+        stu_q_hiddens = distiller.projectors["query"](hiddens).float()  # (batch_size, proj_dim)
         tea_k_hiddens = distiller.projectors["key"](teacher_hiddens).float()  # (batch_size, teacher_sequence_length, proj_dim)
         tea_v_hiddens = distiller.projectors["value"](teacher_hiddens).float()  # (batch_size, teacher_sequence_length, hidden_size)
 
@@ -109,7 +106,7 @@ class DualSpaceKDWithCMA(VariousDivergence):
             )
 
             # Tính alignment từ student sang teacher (s2t)
-            tea_q_hiddens = distiller.projectors["query"](tea_cls_hidden).float()  # (batch_size, proj_dim)
+            tea_q_hiddens = distiller.projectors["query"](teacher_hiddens).float()  # (batch_size, proj_dim)
             stu_k_hiddens = distiller.projectors["key"](hiddens).float()  # (batch_size, sequence_length, proj_dim)
             stu_v_hiddens = distiller.projectors["value"](hiddens).float()  # (batch_size, sequence_length, hidden_size)
 
