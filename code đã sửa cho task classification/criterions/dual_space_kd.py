@@ -61,8 +61,8 @@ class DualSpaceKD(VariousDivergence):
         teacher_target = output_data[f"teacher_{distiller.teacher_model_type}_label"]
 
         # Lấy hidden state của token [CLS] thay vì toàn bộ chuỗi
-        hiddens = outputs.hidden_states[-1][:, 0, :]  # (batch_size, hidden_size)
-        teacher_hiddens = teacher_outputs.hidden_states[-1][:, 0, :]  # (batch_size, hidden_size)
+        hiddens = outputs.hidden_states[-1]# (batch_size, hidden_size)
+        teacher_hiddens = teacher_outputs.hidden_states[-1] # (batch_size, hidden_size)
 
         # Student space
         t2s_hiddens = distiller.projectors["t2s"](teacher_hiddens)  # (batch_size, hidden_size)
