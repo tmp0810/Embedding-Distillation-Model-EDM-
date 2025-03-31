@@ -388,7 +388,9 @@ def main():
     with open(args.deepspeed_config, "r") as f:
         ds_config = json.load(f)
 
-    ds_config["gradient_accumulation_steps"] = args.gradient_accumulation_steps
+    #ds_config["gradient_accumulation_steps"] = args.gradient_accumulation_steps
+    ds_config["gradient_accumulation_steps"] = 1
+
     ds_config["train_micro_batch_size_per_gpu"] = args.batch_size
     ds_config["gradient_clipping"] = args.clip_grad
     ds_config["steps_per_print"] = 10000000
@@ -415,12 +417,14 @@ def main():
     dp_world_size = dist.get_world_size()
     
     if args.do_train:
+        '''
         args.train_iters_per_epoch = int(
             len(dataset["train"]) / 
             (args.batch_size * dp_world_size * args.gradient_accumulation_steps)
         )
         log_rank("Train iters per epoch = {}".format(args.train_iters_per_epoch))
-
+        '''
+        args.train_iters_per_epoch = int(len(dataset["train"]) / (args.batch_size * dp_world_size))
         assert args.total_iters is not None or args.num_epochs is not None
         if args.total_iters is None:
             args.total_iters = args.train_iters_per_epoch * args.num_epochs
