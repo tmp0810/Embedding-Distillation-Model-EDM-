@@ -35,51 +35,38 @@ from criterions import build_criterion
 
 torch.set_num_threads(4)
 
-# Chuẩn bị data
 def prepare_dataset(args, distiller):
     data = {}
-    label_mapping = None # Optional: to store the label mapping if needed
-    
     if args.do_train:
-        # Instantiate and process train data
-        train_dataset_obj = DistillDataset(
+        data["train"] = DistillDataset(
             args, "train", distiller.student_tokenizer,
             distiller.teacher_tokenizers
         )
-        data["train"], label_mapping = train_dataset_obj._load_and_process_data()
         log_rank("Num of train data: {}".format(len(data["train"])))
         
-        # Instantiate and process dev data
-        dev_dataset_obj = DistillDataset(
+        data["dev"] = DistillDataset(
             args, "dev", distiller.student_tokenizer,
             distiller.teacher_tokenizers
         )
-        data["dev"], _ = dev_dataset_obj._load_and_process_data()
         log_rank("Num of dev data: {}".format(len(data["dev"])))
-        
-        # Process test data if available
+
         if os.path.exists(os.path.join(args.data_dir, "test.jsonl")):
-            test_dataset_obj = DistillDataset(
+            data["test"] = DistillDataset(
                 args, "test", distiller.student_tokenizer,
                 distiller.teacher_tokenizers
             )
-            data["test"], _ = test_dataset_obj._load_and_process_data()
             log_rank("Num of test data: {}".format(len(data["test"])))
-    
+
     elif args.do_eval:
-        # Instantiate and process test data
-        test_dataset_obj = DistillDataset(
+        data["test"] = DistillDataset(
             args, "test", distiller.student_tokenizer,
             distiller.teacher_tokenizers
         )
-        data["test"], label_mapping = test_dataset_obj._load_and_process_data()
         log_rank("Num of test data: {}".format(len(data["test"])))
-    
     else:
-        raise ValueError("Do train or do eval must be set")
-    
-    # Return just the dataset dictionary (minimal change)
-    return data  # Optionally: return data, label_mapping if needed
+        raise ValueError("Do train and do eval must set one")
+        
+    return data
 
 def finetune(
     args, 
@@ -108,12 +95,12 @@ def finetune(
         rank=dp_rank, 
         num_replicas=dp_world_size
     )
-    train_dataloader = DataLoader(
-        dataset['train'], 
+    train_loader = Loader(
+        set['train'], 
         sampler=sampler, 
         batch_size=args.batch_size, 
         num_workers=args.num_workers, 
-        collate_fn=dataset["train"].collate
+        collate_fn=set["train"].collate
     )
     
     step = 0
@@ -140,7 +127,7 @@ def finetune(
         epoch_step = 0
         epoch_loss, epoch_nll_loss, epoch_kd_loss = 0.0, 0.0, 0.0
 
-        for batch in train_dataloader:
+        for batch in train_loader:
             st_time = time.time()
             input_batch, output_batch, _ = batch
             dataset["train"].move_to_device([input_batch, output_batch], device)
