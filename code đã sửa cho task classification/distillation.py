@@ -95,7 +95,7 @@ def finetune(
         rank=dp_rank, 
         num_replicas=dp_world_size
     )
-    train_loader = Loader(
+    train_loader = DataLoader(
         set['train'], 
         sampler=sampler, 
         batch_size=args.batch_size, 
