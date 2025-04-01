@@ -50,7 +50,7 @@ def prepare_dataset(args, distiller):
         )
         log_rank("Num of dev data: {}".format(len(data["dev"])))
 
-        if os.path.exists(os.path.join(args.data_dir, "test.jsonl")):
+        if os.path.exists(os.path.join(args.data_dir, "test.csv")):
             data["test"] = DistillDataset(
                 args, "test", distiller.student_tokenizer,
                 distiller.teacher_tokenizers
@@ -129,7 +129,7 @@ def finetune(
 
         for batch in train_loader:
             st_time = time.time()
-            input_batch, output_batch, _ = batch
+            input_batch, output_batch = batch
             dataset["train"].move_to_device([input_batch, output_batch], device)
 
             bs = input_batch["input_ids"].size(0)  # Batch size
