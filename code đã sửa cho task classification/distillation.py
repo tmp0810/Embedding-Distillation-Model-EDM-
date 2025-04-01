@@ -96,11 +96,11 @@ def finetune(
         num_replicas=dp_world_size
     )
     train_loader = DataLoader(
-        set['train'], 
+        dataset['train'], 
         sampler=sampler, 
         batch_size=args.batch_size, 
         num_workers=args.num_workers, 
-        collate_fn=set["train"].collate
+        collate_fn=dataset["train"].collate
     )
     
     step = 0
