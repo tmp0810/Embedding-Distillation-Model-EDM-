@@ -20,6 +20,7 @@ CKPT_NAME="bert"
 CKPT_PATH="${BASE_PATH}/model_hub/${CKPT_NAME}"
 # data
 DATA_DIR="${BASE_PATH}/data/go_emotions/"
+NUM_LABELS=4
 # task
 TASK="sft"
 # hp
@@ -52,6 +53,7 @@ OPTS+=" --n-gpu ${GPUS_PER_NODE}"
 OPTS+=" --data-dir ${DATA_DIR}"
 OPTS+=" --num-workers 0"
 OPTS+=" --dev-num 1000"
+OPTS+=" --num-labels ${NUM_LABELS}"
 # task
 OPTS+=" --task ${TASK}"
 # hp
