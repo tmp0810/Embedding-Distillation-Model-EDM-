@@ -16,7 +16,7 @@ class CrossEntropyLoss(nn.Module):
         self.distiller = distiller
         model = distiller.student_model
         logits = model(**input_data).logits
-        target = output_data["label"]
+        target = output_data["labels"]
         
         # Compute loss and accuracy
         loss, nll_loss = self.compute_cross_entropy_loss(logits, target)
