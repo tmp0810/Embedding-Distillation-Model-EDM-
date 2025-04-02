@@ -55,81 +55,104 @@ class DualSpaceKDWithCMA(VariousDivergence):
         return loss / batch_denom, logging_output
     
     def compute_dual_space_kd_loss_with_cma(
-    self, outputs, teacher_outputs, input_data, output_data, distiller, log
-):
-        # Lấy nhãn classification
-        target = output_data["label"]  # (batch_size,)
-        teacher_target = output_data[f"teacher_{distiller.teacher_model_type}_label"]  # (batch_size,)
+        self, outputs, teacher_outputs, input_data, output_data, distiller, log
+    ):
+        target = output_data["label"]
+        teacher_target = output_data[f"teacher_{distiller.teacher_model_type}_label"]
+        
+        pad_mask = target.ne(self.padding_id)
+        teacher_pad_mask = teacher_target.ne(self.padding_id)
 
-        # Lấy attention mask từ input_data
-        student_input_mask = input_data["attention_mask"]  # (batch_size, sequence_length)
-        teacher_input_mask = input_data[f"teacher_{distiller.teacher_model_type}_attention_mask"]  # (batch_size, teacher_sequence_length)
+        hiddens = outputs.hidden_states[-1]
+        teacher_hiddens = teacher_outputs.hidden_states[-1]
 
-        # Lấy hidden states của layer cuối cùng
-        hiddens = outputs.hidden_states[-1]  # (batch_size, sequence_length, hidden_size)
-        teacher_hiddens = teacher_outputs.hidden_states[-1]  # (batch_size, teacher_sequence_length, hidden_size)
+        if hasattr(distiller.student_model, "model") \
+            and hasattr(distiller.student_model.model, "embed_tokens"):
+            stu_embed_tokens = distiller.student_model.model.embed_tokens
+        elif hasattr(distiller.student_model, "model") \
+            and hasattr(distiller.student_model.model, "model") \
+            and hasattr(distiller.student_model.model.model, "embed_tokens"):
+            stu_embed_tokens = distiller.student_model.model.model.embed_tokens
+        elif hasattr(distiller.student_model, "transformer") \
+            and hasattr(distiller.student_model.transformer, "wte"):
+            stu_embed_tokens = distiller.student_model.transformer.wte
+        else:
+            raise NotImplementedError
 
- 
-        # Tính alignment từ teacher sang student (t2s)
-        stu_q_hiddens = distiller.projectors["query"](hiddens).float()  # (batch_size, proj_dim)
-        tea_k_hiddens = distiller.projectors["key"](teacher_hiddens).float()  # (batch_size, teacher_sequence_length, proj_dim)
-        tea_v_hiddens = distiller.projectors["value"](teacher_hiddens).float()  # (batch_size, teacher_sequence_length, hidden_size)
+        if hasattr(distiller.teacher_model, "model") \
+            and hasattr(distiller.teacher_model.model, "embed_tokens"):
+            tea_embed_tokens = distiller.teacher_model.model.embed_tokens
+        elif hasattr(distiller.teacher_model, "model") \
+            and hasattr(distiller.teacher_model.model, "model") \
+            and hasattr(distiller.teacher_model.model.model, "embed_tokens"):
+            tea_embed_tokens = distiller.teacher_model.model.model.embed_tokens
+        elif hasattr(distiller.teacher_model, "transformer") \
+            and hasattr(distiller.teacher_model.model, "wte"):
+            tea_embed_tokens = distiller.teacher_model.transformer.wte
+        else:
+            raise NotImplementedError
 
-        # Tính alignment giữa [CLS] của student và các token của teacher
-        align = stu_q_hiddens.unsqueeze(1).matmul(tea_k_hiddens.transpose(-2, -1))  # (batch_size, 1, teacher_sequence_length)
-        align = align / math.sqrt(distiller.projectors["query"].out_features)  # Chuẩn hóa theo chiều proj_dim
-        align_mask = teacher_input_mask.float().unsqueeze(1)  # (batch_size, 1, teacher_sequence_length)
-        align = align + (1.0 - align_mask) * (-100000)  # Mask các token padded của teacher
+        formal_target = torch.where(pad_mask, target, torch.zeros_like(target))
+        formal_input = torch.where(pad_mask, input_data["input_ids"], torch.zeros_like(target))
+        stu_input_embeds = stu_embed_tokens(formal_input).detach()
+        stu_target_embeds = stu_embed_tokens(formal_target).detach()
 
-        t2s_weight = torch.softmax(align, -1)  # (batch_size, 1, teacher_sequence_length)
-        t2s_hiddens = t2s_weight.matmul(tea_v_hiddens).squeeze(1)  # (batch_size, hidden_size)
+        formal_teacher_target = torch.where(teacher_pad_mask, teacher_target, torch.zeros_like(teacher_target))
+        formal_teacher_input = torch.where(teacher_pad_mask, input_data[f"teacher_{distiller.teacher_model_type}_input_ids"], torch.zeros_like(teacher_target))
+        tea_input_embeds = tea_embed_tokens(formal_teacher_input).detach()
+        tea_target_embeds = tea_embed_tokens(formal_teacher_target).detach()
 
-        # Tính logits cho t2s
-        # Giả sử sử dụng lm_head như code gốc, nhưng trong classification thông thường cần classification_head
+        stu_index_embeds = torch.cat([stu_input_embeds, stu_target_embeds], -1)
+        tea_index_embeds = torch.cat([tea_input_embeds, tea_target_embeds], -1)
+
+        norm_tea_index_embeds = tea_index_embeds / tea_index_embeds.std()
+        norm_tea_target_embeds = tea_target_embeds / tea_target_embeds.std()
+        norm_teacher_hiddens = teacher_hiddens / teacher_hiddens.std()
+
+        stu_q_hiddens = distiller.projectors["query"](stu_index_embeds).float()
+        tea_k_hiddens = norm_tea_index_embeds.float()
+
+        stu_v_hiddens = distiller.projectors["s2t"](hiddens).float()
+        tea_v_hiddens = distiller.projectors["t2s"](
+            norm_teacher_hiddens + norm_tea_target_embeds
+        ).float()
+        
+        align = stu_q_hiddens.matmul(tea_k_hiddens.transpose(-1, -2))
+        align = align / math.sqrt(2 * teacher_hiddens.shape[-1])
+        align_mask = pad_mask.float().unsqueeze(-1) * teacher_pad_mask.float().unsqueeze(1)
+        align = align + (1.0 - align_mask) * (-100000)
+
+        t2s_weight = torch.softmax(align, -1)        
+        t2s_hiddens = t2s_weight.matmul(tea_v_hiddens).to(hiddens)
         t2s_logits = t2s_hiddens.matmul(
             distiller.student_model.lm_head.weight.detach().transpose(-1, -2)
-        )  # (batch_size, num_classes hoặc vocab_size)
-
-        # Tính cross-entropy loss cho t2s
-        t2s_ce_loss = self.compute_cross_entropy_loss(t2s_logits, target)[0]  # Scalar
-        t2s_acc = (t2s_logits.argmax(-1) == target).float().sum()  # Tổng số dự đoán đúng trong batch
-        max_probs = t2s_logits.softmax(-1).max(-1)[0].sum()  # Tổng xác suất lớn nhất
+        )
+        t2s_ce_loss = self.compute_cross_entropy_loss(t2s_logits, target)[0]
+        t2s_acc_mask = t2s_logits.argmax(-1).eq(target)
+        t2s_acc = (t2s_acc_mask * pad_mask).sum()
+        max_probs = (t2s_logits.softmax(-1).max(-1)[0] * pad_mask).sum()
         log["t2s_ce_loss"] = t2s_ce_loss
         log["t2s_acc"] = t2s_acc
         log["max_t2s_prob"] = max_probs
-
-        # Tính thêm các loss khác nếu không chỉ train projectors
-        if not self.args.only_save_projector:
-            # Tính t2s_kd_loss giữa logits của student và t2s_logits
+        
+        if not self.args.only_save_projector:  # skip if only train projectors (pre-train projectors)
             t2s_kd_loss = self.dist_func(
-                outputs.logits, t2s_logits.detach(), target, reduction="sum", use_tea_temp=True
+                outputs.logits, t2s_logits.detach(), target, reduction="none", use_tea_temp=True
             )
+            t2s_kd_loss = (t2s_kd_loss * pad_mask * t2s_acc_mask).sum()
 
-            # Tính alignment từ student sang teacher (s2t)
-            tea_q_hiddens = distiller.projectors["query"](teacher_hiddens).float()  # (batch_size, proj_dim)
-            stu_k_hiddens = distiller.projectors["key"](hiddens).float()  # (batch_size, sequence_length, proj_dim)
-            stu_v_hiddens = distiller.projectors["value"](hiddens).float()  # (batch_size, sequence_length, hidden_size)
-
-            align_s2t = tea_q_hiddens.unsqueeze(1).matmul(stu_k_hiddens.transpose(-2, -1))  # (batch_size, 1, sequence_length)
-            align_s2t = align_s2t / math.sqrt(distiller.projectors["query"].out_features)
-            align_mask_s2t = student_input_mask.float().unsqueeze(1)  # (batch_size, 1, sequence_length)
-            align_s2t = align_s2t + (1.0 - align_mask_s2t) * (-100000)
-
-            s2t_weight = torch.softmax(align_s2t, -1)  # (batch_size, 1, sequence_length)
-            s2t_hiddens = s2t_weight.matmul(stu_v_hiddens).squeeze(1)  # (batch_size, hidden_size)
-
-            # Tính logits cho s2t
+            s2t_weight = torch.softmax(align.transpose(-1, -2), -1)
+            s2t_hiddens = s2t_weight.matmul(stu_v_hiddens).to(hiddens)
             s2t_logits = s2t_hiddens.matmul(
-                distiller.teacher_model.lm_head.weight.detach().transpose(-1, -2)
-            )  # (batch_size, num_classes hoặc vocab_size)
-
-            # Tính KL divergence giữa s2t_logits và teacher logits
-            s2t_kd_loss = self.compute_forward_kl_divergence(
-                s2t_logits, teacher_outputs.logits, teacher_target, reduction="sum"
+            distiller.teacher_model.lm_head.weight.detach().transpose(-1, -2)
             )
-            s2t_acc = (s2t_logits.argmax(-1) == teacher_target).float().sum()
 
-            # Tổng loss
+            s2t_kd_loss = self.compute_forward_kl_divergence(
+                s2t_logits, teacher_outputs.logits, teacher_target, reduction="none"
+            )
+            s2t_kd_loss = (s2t_kd_loss * teacher_pad_mask).sum()
+            s2t_acc = (s2t_logits.argmax(-1).eq(teacher_target) * teacher_pad_mask).sum() * pad_mask.sum() / teacher_pad_mask.sum()
+
             kd_loss = t2s_ce_loss + t2s_kd_loss + s2t_kd_loss
             log["t2s_kd_loss"] = t2s_kd_loss
             log["s2t_kd_loss"] = s2t_kd_loss
