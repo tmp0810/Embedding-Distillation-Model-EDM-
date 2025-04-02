@@ -156,7 +156,7 @@ def finetune(
         if args.save_dir and (epoch + 1) % args.save_interval == 0:
             if (epoch + 1) % args.eval_interval == 0:
                 log_rank("Evaluating before saving model...")
-                eval_loss, eval_results = evaluate(
+                eval_loss, eval_accu, eval_precision, eval_recall = evaluate(
                     args, 
                     tokenizer, 
                     model.module.student_model, 
@@ -165,7 +165,7 @@ def finetune(
                     device
                 )
                 if "test" in dataset:
-                    _, _ = evaluate(
+                    _, _, _, _ = evaluate(
                         args, 
                         tokenizer, 
                         model.module.student_model, 
@@ -174,20 +174,11 @@ def finetune(
                         device,
                         repeat_times=1
                     )
-
-                if args.eval_gen:
-                    ckpt_name = "epoch{}_step{}_loss{:.4f}_rougel{:.4f}".format(
-                        epoch + 1, 
-                        logging_output["global_step"], 
-                        eval_loss, 
-                        eval_results["rougeL"]
-                    )
-                else:
-                    ckpt_name = "epoch{}_step{}_loss{:.4f}".format(
-                        epoch + 1, 
-                        logging_output["global_step"], 
-                        eval_loss
-                    )
+                ckpt_name = "epoch{}_step{}_loss{:.4f}".format(
+                    epoch + 1, 
+                    logging_output["global_step"], 
+                    eval_loss
+                )
                 save_dir_path = os.path.join(args.save_dir, ckpt_name)
                 
                 if dist.get_rank() == 0:
@@ -203,20 +194,12 @@ def finetune(
                             model.module.projectors.state_dict(), 
                             os.path.join(save_dir_path, "projector.pt")
                         )
+                    model_list.append({
+                        "path": save_dir_path, 
+                        "score": eval_loss
+                    })
+                    model_list = sorted(model_list, key=lambda x: x["score"], reverse=True)
                     
-                    if args.eval_gen:
-                        model_list.append({
-                            "path": save_dir_path, 
-                            "score": eval_results["rougeL"]
-                        })
-                        model_list = sorted(model_list, key=lambda x: x["score"])
-                    else:
-                        model_list.append({
-                            "path": save_dir_path, 
-                            "score": eval_loss
-                        })
-                        model_list = sorted(model_list, key=lambda x: x["score"], reverse=True)
-                        
                     if len(model_list) > args.keep_best_n_checkpoints:
                         removed_model = model_list.pop(0)
                         shutil.rmtree(removed_model["path"])
@@ -301,11 +284,12 @@ def evaluate(args, tokenizer, model, dataset, split, device):
     for input_batch, output_batch in dataloader:
         dataset.move_to_device([input_batch, output_batch], device)
 
-        logits = model(
+        outputs = model(
             input_batch["input_ids"],
             attention_mask=input_batch["attention_mask"],
             position_ids=input_batch.get("position_ids", None)
         )
+        logits = outputs.logits
 
         labels = output_batch["labels"]
 
