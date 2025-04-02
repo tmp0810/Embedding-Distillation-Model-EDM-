@@ -214,7 +214,7 @@ class Distiller(nn.Module):
         log_rank("Loading teacher model...")
         config = AutoConfig.from_pretrained(
             self.args.teacher_model_path,
-            num_labels=self.num_labels,
+            num_labels=self.args.num_labels,
             trust_remote_code=True
         )
         config.is_model_parallel = False
